@@ -7,36 +7,91 @@ import { useMemo } from "react";
 import sourceData from "./source-data.json";
 import type { SourceDataType, TableDataType } from "./types";
 
-/**
- * Example of how a tableData object should be structured.
- *
- * Each `row` object has the following properties:
- * @prop {string} person - The full name of the employee.
- * @prop {number} past12Months - The value for the past 12 months.
- * @prop {number} y2d - The year-to-date value.
- * @prop {number} may - The value for May.
- * @prop {number} june - The value for June.
- * @prop {number} july - The value for July.
- * @prop {number} netEarningsPrevMonth - The net earnings for the previous month.
- */
+const getCurrentMonthData = () => {
+  const now = new Date();
+  const currentMonth = now.toLocaleString('default', { month: 'long' });
+  const currentYear = now.getFullYear();
+  const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const prevMonthName = prevMonth.toLocaleString('default', { month: 'long' });
+  const prevMonthYear = prevMonth.getFullYear();
+  
+  return {
+    currentMonth,
+    currentYear,
+    prevMonthName,
+    prevMonthYear,
+    prevMonthKey: `${prevMonthYear}-${String(prevMonth.getMonth() + 1).padStart(2, '0')}`
+  };
+};
 
 const tableData: TableDataType[] = (
   sourceData as unknown as SourceDataType[]
-).map((dataRow, index) => {
-  const person = `${dataRow?.employees?.firstname} - ...`;
+).reduce((acc, dataRow) => {
+  const { currentMonth, prevMonthName, prevMonthKey } = getCurrentMonthData();
+  const person = dataRow?.employees || dataRow?.externals;
+  
+  if (!person || person.status !== 'active') return acc;
+
+  // Get utilization rates
+  const utilization = person.workforceUtilisation;
+  const lastThreeMonths = utilization?.lastThreeMonthsIndividually || [];
+  
+  // Find current and previous month utilization
+  const currentMonthUtil = lastThreeMonths.find(m => m.month === currentMonth)?.utilisationRate || '0';
+  const prevMonthUtil = lastThreeMonths.find(m => m.month === prevMonthName)?.utilisationRate || '0';
+  
+  // Calculate net earnings for previous month
+  let netEarnings = '0 EUR';
+  
+  if (dataRow.employees) {
+    // For employees, get from costsByMonth
+    const costs = dataRow.employees.costsByMonth?.potentialEarningsByMonth?.find(
+      m => m.month === prevMonthKey
+    )?.costs;
+    
+    if (costs) {
+      netEarnings = `${Math.round(parseFloat(costs))} EUR`;
+    } else if (dataRow.employees.statusAggregation?.monthlySalary) {
+      // Fallback to monthly salary if no costs data
+      netEarnings = `${dataRow.employees.statusAggregation.monthlySalary} EUR`;
+    }
+  } else if (dataRow.externals) {
+    // For externals, calculate based on hourly rate and utilization
+    const hourlyRate = dataRow.externals.hourlyRateForProjects;
+    if (hourlyRate && utilization) {
+      // Assuming 160 working hours/month (40h/week * 4 weeks)
+      const hoursWorked = 160 * parseFloat(prevMonthUtil || '0');
+      const earnings = hoursWorked * parseFloat(hourlyRate);
+      netEarnings = `${Math.round(earnings)} EUR`;
+    }
+  }
 
   const row: TableDataType = {
-    person: `${person}`,
-    past12Months: `past12Months ${index} placeholder`,
-    y2d: `y2d ${index} placeholder`,
-    may: `may ${index} placeholder`,
-    june: `june ${index} placeholder`,
-    july: `july ${index} placeholder`,
-    netEarningsPrevMonth: `netEarningsPrevMonth ${index} placeholder`,
+    person: person.name,
+    past12Months: utilization?.utilisationRateLastTwelveMonths 
+      ? `${Math.round(parseFloat(utilization.utilisationRateLastTwelveMonths) * 100)}%` 
+      : '0%',
+    y2d: utilization?.utilisationRateYearToDate 
+      ? `${Math.round(parseFloat(utilization.utilisationRateYearToDate) * 100)}%` 
+      : '0%',
+    may: (() => {
+      const mayData = lastThreeMonths.find(m => m.month === 'May');
+      return mayData
+        ? `${Math.round(parseFloat(mayData.utilisationRate) * 100)}%`
+        : '...';
+      })(),
+
+    june: lastThreeMonths.find(m => m.month === 'June')?.utilisationRate 
+      ? `${Math.round(parseFloat(lastThreeMonths.find(m => m.month === 'June')!.utilisationRate) * 100)}%` 
+      : '0%',
+    july: lastThreeMonths.find(m => m.month === 'July')?.utilisationRate 
+      ? `${Math.round(parseFloat(lastThreeMonths.find(m => m.month === 'July')!.utilisationRate) * 100)}%` 
+      : '0%',
+    netEarningsPrevMonth: netEarnings,
   };
 
-  return row;
-});
+  return [...acc, row];
+}, [] as TableDataType[]);
 
 const Example = () => {
   const columns = useMemo<MRT_ColumnDef<TableDataType>[]>(
